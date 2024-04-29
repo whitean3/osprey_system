@@ -151,7 +151,9 @@ def main():
     osprey = pyOsprey_lib.Osprey()
 
     diagnostics_ConnectionMethod = OspreyEnums.ConnectionMethod.USB
-    diagnostics_IP_Override = '10.0.1.4'
+
+    diagnostics_IP_Override = '10.0.1.4', '10.0.1.5'
+
     diagnostics_EnableMassStorage = False
     diagnostics_EnableTFTP = False
     diagnostics_DisableTFTP = False
@@ -163,63 +165,47 @@ def main():
     diagnostics_Histogram_height = 10
     diagnostics_Write_CSVs = False
 
-    if osprey.Connect(method=diagnostics_ConnectionMethod, ip_address=diagnostics_IP_Override):
+    for ip in diagnostics_IP_Override:
 
-        # Enable TFTP server?
-        if diagnostics_EnableTFTP:
-            osprey.TFTP_Enable()
+        if osprey.Connect(method=diagnostics_ConnectionMethod, ip_address=ip):
 
-        # Disable TFTP server?
-        if diagnostics_DisableTFTP:
-            osprey.TFTP_Disable()
+            # Enable TFTP server?
+            if diagnostics_EnableTFTP:
+                osprey.TFTP_Enable()
 
-        # Get status of TFTP server
-        tftpStatus = osprey.TFTP_Status()
-        print("TFTP server enabled?: " + str(tftpStatus))
+            # Disable TFTP server?
+            if diagnostics_DisableTFTP:
+                osprey.TFTP_Disable()
 
-        # Enter mass storage mode?
-        if diagnostics_EnableMassStorage:
-            osprey.MassStorageMode_Enable()
+            # Get status of TFTP server
+            tftpStatus = osprey.TFTP_Status()
+            print("TFTP server enabled?: " + str(tftpStatus))
 
-        # Perform firmware update?
-        if diagnostics_FirmwareUpdate:
-            try:
-                if osprey.Connected:
-                    print("Performing firmware update...")
-                    osprey.DTB.control(31, input)
-                else:  # Not connected
-                    print("*** ERROR *** Cannot perform firmware update -- not connected!")
-            except Exception as e:
-                print("*** ERROR *** Failed to perform firmware update on device")
-                print(str(e))
+            # Enter mass storage mode?
+            if diagnostics_EnableMassStorage:
+                osprey.MassStorageMode_Enable()
 
-        # Acquisition test?
-        if (not diagnostics_EnableTFTP) and (not diagnostics_DisableTFTP) and (
-        not diagnostics_EnableMassStorage) and diagnostics_AcquireSpectrum:
-
-            # Enable the HVPS
-            success = osprey.HVPS_Enable(voltage_setpoint=750)
-
-            # Start an acquisition for a preset live time
-            print("Acquire for " + str(diagnostics_LiveTime_sec) + " seconds (Preset live time)...")
-            if osprey.Acquisition_StopAll():
-                if osprey.PresetTime_Set(preset_mode=OspreyEnums.PresetType.LiveTime,
-                                         preset_time_sec=diagnostics_LiveTime_sec):
-                    osprey.Acquisition_Start()
-
-            # Wait for acquisition to complete
-            waitTime_sec = 0
-            while osprey.IsAcquiring():
-                time.sleep(1)
-                waitTime_sec += 1
-                print("... Elapsed time: " + str(waitTime_sec) + " sec")
+            # Perform firmware update?
+            if diagnostics_FirmwareUpdate:
+                try:
+                    if osprey.Connected:
+                        print("Performing firmware update...")
+                        osprey.DTB.control(31, input)
+                    else:  # Not connected
+                        print("*** ERROR *** Cannot perform firmware update -- not connected!")
+                except Exception as e:
+                    print("*** ERROR *** Failed to perform firmware update on device")
+                    print(str(e))
 
     print("Acquiring background counts...")
     background_cps = initialize_background_reading(osprey)
     print("Background cps:", background_cps)
 
     print("Connecting Camera...")
-    feed1 = cv2.VideoCapture(1)
+    import cv2
+    import numpy as np
+
+    feed1 = cv2.VideoCapture("rtsp://admin:Y%Lab2024@10.0.0.119/cam/realmonitor?channel=1&subtype=0")
     ret, highest_cps_frame = feed1.read()
     print("Camera Connected.")
 
@@ -228,14 +214,14 @@ def main():
         highest_cps = 0
         # Read CPM value from nanoMCA
         nD = 0
+        for ip in diagnostics_IP_Override:
+            cps = osprey.GetData_CountRate()
+            print("Detector IP:", ip, "Current count rate:", cps)
+            if cps > 2*background_cps:
+                detection_event(osprey, feed1, background_cps, diagnostics_IP_Override, model, cps)
+                nD += 1
 
-        cps = osprey.GetData_CountRate()
-        print("Detector IP:", diagnostics_IP_Override, "Current count rate:", cps)
-        if cps > 2*background_cps:
-            detection_event(osprey, feed1, background_cps, diagnostics_IP_Override, model, cps)
-            nD += 1
-
-        time.sleep(1)
+            time.sleep(1)
 
 
 if __name__ == "__main__":
