@@ -16,6 +16,14 @@ import pyOsprey_lib
 from pyOsprey_enumerations import OspreyEnums
 
 
+class Detector:
+    def __init__(self, name, detectorIP, camIP):
+        self.Background = 0
+        self.Name = name
+        self.IP = detectorIP
+        self.CamIP = camIP
+
+
 def detect_objects(identifier, image, model, cps):
     class_list = model.model.names
 
@@ -109,33 +117,47 @@ def extract_object(image, box):
     return region
 
 
-def initialize_background_reading(detector):
-    total_counts = 0
+def initialize_background_reading(det):
+    total_counts = [0]*len(det)
     t = 10
 
+
     for c in range(0, t):
-        total_counts += detector.GetData_CountRate()
+        d = 0
+        for detector in det:
+            osprey = ospreys[detector.Name]
+            total_counts[d] += osprey.GetData_CountRate()
+            d += 1
         time.sleep(1)
 
-    return total_counts/t
+    d = 0
+    for detector in det:
+        detector.Background = total_counts[d] / t
+        d += 1
+
+    return
 
 
-def detection_event(detector, feed, background_cps, sn, model, cps):
+def detection_event(detector, background_cps, sn, model, cps):
     highest_cps = 0
     current_cps = 0
     event_duration = 0
     original_dir = os.getcwd()
-
+    camera_link = "http://admin:Y%Lab2024@" + sn + "/cgi-bin/snapshot.cgi"
+    feed = cv2.VideoCapture("http://admin:Y%Lab2024@10.0.0.118/cgi-bin/snapshot.cgi")
+    highest_cps_frame = feed.read()
     print("Detector", sn, "high counts, initiating detection event.")
-    ret, highest_cps_frame = feed.read()
+
     while cps > 1.5 * background_cps:
         cps = detector.GetData_CountRate()
         print(cps)
         if cps > highest_cps:
+            feed = cv2.VideoCapture("http://admin:Y%Lab2024@10.0.0.118/cgi-bin/snapshot.cgi")
             ret, highest_cps_frame = feed.read()
             highest_cps = cps
         event_duration += 1
         time.sleep(1)
+
     print("Detection event over, analyzing highest count frame...")
     result = detect_objects(sn, highest_cps_frame, model, highest_cps)
     print("Image processed.")
@@ -146,14 +168,15 @@ def detection_event(detector, feed, background_cps, sn, model, cps):
     return
 
 
+detectors = [Detector('A', '10.0.1.4', '10.0.0.118')]
+            # Detector('B', '10.0.1.5', '10.0.0.137')]
+
+ospreys = {'A': pyOsprey_lib.Osprey(), 'B': pyOsprey_lib.Osprey()}
+
 def main():
     model = YOLO('yolov8x.pt')
-    osprey = pyOsprey_lib.Osprey()
 
     diagnostics_ConnectionMethod = OspreyEnums.ConnectionMethod.USB
-
-    diagnostics_IP_Override = '10.0.1.4', '10.0.1.5'
-
     diagnostics_EnableMassStorage = False
     diagnostics_EnableTFTP = False
     diagnostics_DisableTFTP = False
@@ -165,9 +188,11 @@ def main():
     diagnostics_Histogram_height = 10
     diagnostics_Write_CSVs = False
 
-    for ip in diagnostics_IP_Override:
+    for detector in detectors:      # Detector and Camera connection
 
-        if osprey.Connect(method=diagnostics_ConnectionMethod, ip_address=ip):
+        osprey = pyOsprey_lib.Osprey()
+
+        if osprey.Connect(method=diagnostics_ConnectionMethod):
 
             # Enable TFTP server?
             if diagnostics_EnableTFTP:
@@ -196,30 +221,32 @@ def main():
                 except Exception as e:
                     print("*** ERROR *** Failed to perform firmware update on device")
                     print(str(e))
+            ospreys['A'] = osprey
+
+        print("Connecting Cameras...")
+        camera_link = "http://admin:Y%Lab2024@" + detector.CamIP + "/cgi-bin/snapshot.cgi"
+        feed = cv2.VideoCapture(camera_link)
+        ret, highest_cps_frame = feed.read()
+        if ret:
+            print("Camera ", detector.Name, " Connected.")
+        else:
+            print("Camera ", detector.Name, " unable to connect")
 
     print("Acquiring background counts...")
-    background_cps = initialize_background_reading(osprey)
-    print("Background cps:", background_cps)
-
-    print("Connecting Camera...")
-    import cv2
-    import numpy as np
-
-    feed1 = cv2.VideoCapture("rtsp://admin:Y%Lab2024@10.0.0.119/cam/realmonitor?channel=1&subtype=0")
-    ret, highest_cps_frame = feed1.read()
-    print("Camera Connected.")
+    initialize_background_reading(detectors)
+    for detector in detectors:
+        print("Background cps:", detector.Name, ": ", detector.Background)
 
     # Main loop
     while True:
         highest_cps = 0
         # Read CPM value from nanoMCA
-        nD = 0
-        for ip in diagnostics_IP_Override:
+        for detector in detectors:
+            osprey = ospreys[detector.Name]
             cps = osprey.GetData_CountRate()
-            print("Detector IP:", ip, "Current count rate:", cps)
-            if cps > 2*background_cps:
-                detection_event(osprey, feed1, background_cps, diagnostics_IP_Override, model, cps)
-                nD += 1
+            print("Detector IP:", detector.IP, "Current count rate:", cps)
+            if cps > 2*detector.Background:
+                detection_event(osprey, detector.Background, detector.IP, model, cps)
 
             time.sleep(1)
 
