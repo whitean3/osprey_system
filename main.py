@@ -24,9 +24,9 @@ class Detector:
         self.CamIP = camIP
 
 
-def detect_objects(identifier, image, model, cps):
+def detect_objects(identifier, image, model, cps, frames):
     class_list = model.model.names
-
+    objects_of_interest = ['car', 'truck', 'person']
     # Perform object detection
 
     results = model(image)
@@ -50,20 +50,19 @@ def detect_objects(identifier, image, model, cps):
                 , (0, 0, 255), 2, cv2.LINE_AA)
     # Saves full image with detection boxes and classes
     cv2.imwrite(output_folder_path+'.png', image_objects)
+    c = 0
+    for im in frames:
+
+        cv2.imwrite(output_folder_path+' ' + str(c) + '.png', im)
+        c += 1
 
     # Saves cropped objects in output folder
-    person_num = 0
-    car_num = 0
     object_num = 0
     for detected_object in objects[3]:
-        if objects[1][object_num] == 'car':
-            car_num += 1
-            object_img_name = 'car' + str(car_num) + '.png'
-            cv2.imwrite(object_img_name, detected_object)
-        if objects[1][object_num] == 'person':
-            person_num += 1
-            object_img_name = 'person' + str(person_num) + '.png'
-            cv2.imwrite(object_img_name, detected_object)
+        for object_type in objects_of_interest:
+            if objects[1][object_num] == object_type:
+                object_img_name = object_type + str(object_num) + '.png'
+                cv2.imwrite(object_img_name, detected_object)
         object_num += 1
 
     return {
@@ -121,7 +120,6 @@ def initialize_background_reading(det):
     total_counts = [0]*len(det)
     t = 10
 
-
     for c in range(0, t):
         d = 0
         for detector in det:
@@ -138,28 +136,31 @@ def initialize_background_reading(det):
     return
 
 
-def detection_event(detector, background_cps, sn, model, cps):
+def detection_event(detector, background_cps, sn, model, cps, cam_ip):
     highest_cps = 0
     current_cps = 0
     event_duration = 0
     original_dir = os.getcwd()
     camera_link = "http://admin:Y%Lab2024@" + sn + "/cgi-bin/snapshot.cgi"
-    feed = cv2.VideoCapture("http://admin:Y%Lab2024@10.0.0.118/cgi-bin/snapshot.cgi")
+    feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
     highest_cps_frame = feed.read()
     print("Detector", sn, "high counts, initiating detection event.")
+    frames = []
 
-    while cps > 1.5 * background_cps:
+    while cps > 1.2 * background_cps:
         cps = detector.GetData_CountRate()
         print(cps)
+        feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
+        ret, event_frame = feed.read()
+        frames.append(event_frame)
         if cps > highest_cps:
-            feed = cv2.VideoCapture("http://admin:Y%Lab2024@10.0.0.118/cgi-bin/snapshot.cgi")
-            ret, highest_cps_frame = feed.read()
+            highest_cps_frame = event_frame
             highest_cps = cps
         event_duration += 1
-        time.sleep(1)
+        time.sleep(0.25)
 
     print("Detection event over, analyzing highest count frame...")
-    result = detect_objects(sn, highest_cps_frame, model, highest_cps)
+    result = detect_objects(sn, highest_cps_frame, model, highest_cps, frames)
     print("Image processed.")
     print("Objects detected in image:", result['objects'])
     print("Event duration:", event_duration, "s")
@@ -168,8 +169,8 @@ def detection_event(detector, background_cps, sn, model, cps):
     return
 
 
-detectors = [Detector('A', '10.0.1.4', '10.0.0.118')]
-            # Detector('B', '10.0.1.5', '10.0.0.137')]
+# detectors = [Detector('A', '10.0.1.4', '10.0.0.118')]
+detectors = [Detector('B', '10.0.1.5', '10.0.0.118')]
 
 ospreys = {'A': pyOsprey_lib.Osprey(), 'B': pyOsprey_lib.Osprey()}
 
@@ -191,6 +192,9 @@ def main():
     for detector in detectors:      # Detector and Camera connection
 
         osprey = pyOsprey_lib.Osprey()
+
+        if detector.Name == 'B':
+            diagnostics_ConnectionMethod = OspreyEnums.ConnectionMethod.Ethernet
 
         if osprey.Connect(method=diagnostics_ConnectionMethod):
 
@@ -221,7 +225,11 @@ def main():
                 except Exception as e:
                     print("*** ERROR *** Failed to perform firmware update on device")
                     print(str(e))
-            ospreys['A'] = osprey
+            if osprey.Acquisition_StopAll():
+                if osprey.PresetTime_Set(preset_mode=OspreyEnums.PresetType.LiveTime, preset_time_sec=0):
+                    osprey.Acquisition_Start()
+
+            ospreys[detector.Name] = osprey
 
         print("Connecting Cameras...")
         camera_link = "http://admin:Y%Lab2024@" + detector.CamIP + "/cgi-bin/snapshot.cgi"
@@ -238,17 +246,22 @@ def main():
         print("Background cps:", detector.Name, ": ", detector.Background)
 
     # Main loop
-    while True:
-        highest_cps = 0
-        # Read CPM value from nanoMCA
+    try:
+        while True:
+            highest_cps = 0
+            # Read CPM value from nanoMCA
+            for detector in detectors:
+                osprey = ospreys[detector.Name]
+                cps = osprey.GetData_CountRate()
+                print("Detector IP:", detector.IP, "Current count rate:", cps)
+                if cps > 1.33*detector.Background:
+                    detection_event(osprey, detector.Background, detector.IP, model, cps, detector.CamIP)
+
+                time.sleep(0.25)
+    except KeyboardInterrupt:
         for detector in detectors:
             osprey = ospreys[detector.Name]
-            cps = osprey.GetData_CountRate()
-            print("Detector IP:", detector.IP, "Current count rate:", cps)
-            if cps > 2*detector.Background:
-                detection_event(osprey, detector.Background, detector.IP, model, cps)
-
-            time.sleep(1)
+            osprey.Disconnect()
 
 
 if __name__ == "__main__":
