@@ -28,9 +28,9 @@ class Detector:
         self.Background_SpectrumData = OspreyLib.SpectrumData
 
 
-def detect_objects(identifier, image, model, cps):
+def detect_objects(identifier, image, model, cps, frames):
     class_list = model.model.names
-
+    objects_of_interest = ['car', 'truck', 'person']
     # Perform object detection
 
     results = model(image)
@@ -54,20 +54,21 @@ def detect_objects(identifier, image, model, cps):
                 , (0, 0, 255), 2, cv2.LINE_AA)
     # Saves full image with detection boxes and classes
     cv2.imwrite(output_folder_path+'.png', image_objects)
+    c = 0
+    for im in frames:
+
+        cv2.imwrite(output_folder_path+' ' + str(c) + '.png', im)
+        c += 1
 
     # Saves cropped objects in output folder
     person_num = 0
     car_num = 0
     object_num = 0
     for detected_object in objects[3]:
-        if objects[1][object_num] == 'car':
-            car_num += 1
-            object_img_name = 'car' + str(car_num) + '.png'
-            cv2.imwrite(object_img_name, detected_object)
-        if objects[1][object_num] == 'person':
-            person_num += 1
-            object_img_name = 'person' + str(person_num) + '.png'
-            cv2.imwrite(object_img_name, detected_object)
+        for object_type in objects_of_interest:
+            if objects[1][object_num] == object_type:
+                object_img_name = object_type + str(object_num) + '.png'
+                cv2.imwrite(object_img_name, detected_object)
         object_num += 1
 
     return {
@@ -145,33 +146,36 @@ def initialize_background_reading(det):
     return
 
 
-def detection_event(detector, background_cps, sn, model, cps):
+def detection_event(detector, background_cps, sn, model, cps, cam_ip):
     highest_cps = 0
     current_cps = 0
     event_duration = 0
     original_dir = os.getcwd()
     camera_link = "http://admin:Y%Lab2024@" + sn + "/cgi-bin/snapshot.cgi"
-    feed = cv2.VideoCapture("http://admin:Y%Lab2024@10.0.0.118/cgi-bin/snapshot.cgi")
+    feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
     highest_cps_frame = feed.read()
     print("Detector", sn, "high counts, initiating detection event.")
+    frames = []
     detector.OspreyInstance.Acquisition_Start()
 
-    while cps > 1.5 * background_cps:
+    while cps > 1.2 * background_cps:
         cps = detector.GetData_CountRate()
         print(cps)
+        feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
+        ret, event_frame = feed.read()
+        frames.append(event_frame)
         if cps > highest_cps:
-            feed = cv2.VideoCapture("http://admin:Y%Lab2024@10.0.0.118/cgi-bin/snapshot.cgi")
-            ret, highest_cps_frame = feed.read()
+            highest_cps_frame = event_frame
             highest_cps = cps
         event_duration += 1
-        time.sleep(1)
+        time.sleep(0.25)
 
     detector.OspreyInstance.Acquisition_Stop()
     event_spectrumData = detector.OspreyInstance.GetData_PHA()
 
     cv2.imwrite("Event Spectrum", plt.hist(event_spectrumData.Spectrum))
     print("Detection event over, analyzing highest count frame...")
-    result = detect_objects(sn, highest_cps_frame, model, highest_cps)
+    result = detect_objects(sn, highest_cps_frame, model, highest_cps, frames)
     print("Image processed.")
     print("Objects detected in image:", result['objects'])
     print("Event duration:", event_duration, "s")
@@ -214,18 +218,21 @@ def main():
     initialize_background_reading(detectors)
 
     # Main loop
-    while True:
-        highest_cps = 0
-        # Read CPM value from nanoMCA
+    try:
+        while True:
+            highest_cps = 0
+            # Read CPM value from nanoMCA
+            for detector in detectors:
+                cps = detector.OspreyInstance.GetData_CountRate()
+                queuepy.Queue(detector.Bkg_counts, 20, cps)
+                detector.background = sum(detector.Bkg_counts)/len(detector.Bkg_counts)
+                print("Detector IP:", detector.IP, "Current count rate:", cps)
+                if cps > 1.33 * detector.Background:
+                    detection_event(detector.OspreyInstance, detector.Background, detector.IP, model, cps,
+                                    detector.CamIP)
+    except KeyboardInterrupt:
         for detector in detectors:
-            cps = detector.OspreyInstance.GetData_CountRate()
-            queuepy.Queue(detector.Bkg_counts, 20, cps)
-            detector.background = sum(detector.Bkg_counts)/len(detector.Bkg_counts)
-            print("Detector IP:", detector.IP, "Current count rate:", cps)
-            if cps > 2 * detector.Background:
-                detection_event(detector.OspreyInstance, detector.Background, detector.IP, model, cps)
-
-            time.sleep(0.5)
+            detector.OspreyInstance.Disconnect()
 
 
 if __name__ == "__main__":
