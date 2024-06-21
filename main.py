@@ -5,28 +5,32 @@ import csv
 from ultralytics import YOLO
 import numpy as np
 import time
-import serial
 from datetime import date, datetime
-from scipy.spatial import KDTree
 from PIL import Image
-from pyNanoMCA_lib import NanoMCA
-import pyNanoMCA_MultiAcq as Multi
 import random
-import pyOsprey_lib
+import pyOsprey_lib as OspreyLib
+import queuepy
 from pyOsprey_enumerations import OspreyEnums
+import matplotlib.pyplot as plt
 
 
 class Detector:
+    """
+    Object that contains information relevant to each Detector/camera pair
+    """
     def __init__(self, name, detectorIP, camIP):
         self.Background = 0
         self.Name = name
         self.IP = detectorIP
         self.CamIP = camIP
+        self.Bkg_counts = []
+        self.OspreyInstance = OspreyLib.Osprey()
+        self.Background_SpectrumData = OspreyLib.SpectrumData
 
 
-def detect_objects(identifier, image, model, cps, frames):
+def detect_objects(identifier, image, model, cps):
     class_list = model.model.names
-    objects_of_interest = ['car', 'truck', 'person']
+
     # Perform object detection
 
     results = model(image)
@@ -40,7 +44,7 @@ def detect_objects(identifier, image, model, cps, frames):
 
     # Creates an output folder with detector number and current date/time in name
     output_folder_path = 'detector_' + str(identifier) + '_' + current_time
-    path = os.path.join(os.getcwd(),output_folder_path)
+    path = os.path.join(os.getcwd(), output_folder_path)
     os.mkdir(path)
     os.chdir(path)
     # Labeling image
@@ -50,19 +54,20 @@ def detect_objects(identifier, image, model, cps, frames):
                 , (0, 0, 255), 2, cv2.LINE_AA)
     # Saves full image with detection boxes and classes
     cv2.imwrite(output_folder_path+'.png', image_objects)
-    c = 0
-    for im in frames:
-
-        cv2.imwrite(output_folder_path+' ' + str(c) + '.png', im)
-        c += 1
 
     # Saves cropped objects in output folder
+    person_num = 0
+    car_num = 0
     object_num = 0
     for detected_object in objects[3]:
-        for object_type in objects_of_interest:
-            if objects[1][object_num] == object_type:
-                object_img_name = object_type + str(object_num) + '.png'
-                cv2.imwrite(object_img_name, detected_object)
+        if objects[1][object_num] == 'car':
+            car_num += 1
+            object_img_name = 'car' + str(car_num) + '.png'
+            cv2.imwrite(object_img_name, detected_object)
+        if objects[1][object_num] == 'person':
+            person_num += 1
+            object_img_name = 'person' + str(person_num) + '.png'
+            cv2.imwrite(object_img_name, detected_object)
         object_num += 1
 
     return {
@@ -117,50 +122,56 @@ def extract_object(image, box):
 
 
 def initialize_background_reading(det):
-    total_counts = [0]*len(det)
     t = 10
 
+    for detector in det:
+        detector.Bkg_counts = [0]*t
+        detector.OspreyInstance.Acquisition_Start()
+
     for c in range(0, t):
-        d = 0
         for detector in det:
-            osprey = ospreys[detector.Name]
-            total_counts[d] += osprey.GetData_CountRate()
-            d += 1
+            cps = detector.OspreyInstance.GetData_CountRate()
+            detector.Bkg_counts[c] = cps
         time.sleep(1)
 
-    d = 0
     for detector in det:
-        detector.Background = total_counts[d] / t
-        d += 1
+        detector.Background = sum(detector.Bkg_counts) / t
+        detector.OspreyInstance.Acquisition_Stop()
+        detector.Background_SpectrumData = detector.OspreyInstance.GetData_PHA()
+        filename = "Detector " + detector.Name + " Background Spectrum"
+        path = "Background Spectra/" + filename
+        cv2.imwrite(path, plt.hist(detector.Background_SpectrumData.Spectrum))
 
     return
 
 
-def detection_event(detector, background_cps, sn, model, cps, cam_ip):
+def detection_event(detector, background_cps, sn, model, cps):
     highest_cps = 0
     current_cps = 0
     event_duration = 0
     original_dir = os.getcwd()
     camera_link = "http://admin:Y%Lab2024@" + sn + "/cgi-bin/snapshot.cgi"
-    feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
+    feed = cv2.VideoCapture("http://admin:Y%Lab2024@10.0.0.118/cgi-bin/snapshot.cgi")
     highest_cps_frame = feed.read()
     print("Detector", sn, "high counts, initiating detection event.")
-    frames = []
+    detector.OspreyInstance.Acquisition_Start()
 
-    while cps > 1.2 * background_cps:
+    while cps > 1.5 * background_cps:
         cps = detector.GetData_CountRate()
         print(cps)
-        feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
-        ret, event_frame = feed.read()
-        frames.append(event_frame)
         if cps > highest_cps:
-            highest_cps_frame = event_frame
+            feed = cv2.VideoCapture("http://admin:Y%Lab2024@10.0.0.118/cgi-bin/snapshot.cgi")
+            ret, highest_cps_frame = feed.read()
             highest_cps = cps
         event_duration += 1
-        time.sleep(0.25)
+        time.sleep(1)
 
+    detector.OspreyInstance.Acquisition_Stop()
+    event_spectrumData = detector.OspreyInstance.GetData_PHA()
+
+    cv2.imwrite("Event Spectrum", plt.hist(event_spectrumData.Spectrum))
     print("Detection event over, analyzing highest count frame...")
-    result = detect_objects(sn, highest_cps_frame, model, highest_cps, frames)
+    result = detect_objects(sn, highest_cps_frame, model, highest_cps)
     print("Image processed.")
     print("Objects detected in image:", result['objects'])
     print("Event duration:", event_duration, "s")
@@ -169,19 +180,14 @@ def detection_event(detector, background_cps, sn, model, cps, cam_ip):
     return
 
 
-# detectors = [Detector('A', '10.0.1.4', '10.0.0.118')]
-detectors = [Detector('B', '10.0.1.5', '10.0.0.118')]
+# Creates Detector object for each detector in system
+detectors = [Detector('A', '10.0.0.3', '10.0.0.118')]  # Detector('B', '10.0.1.5', '10.0.0.137')]
 
-ospreys = {'A': pyOsprey_lib.Osprey(), 'B': pyOsprey_lib.Osprey()}
 
 def main():
     model = YOLO('yolov8x.pt')
 
-    diagnostics_ConnectionMethod = OspreyEnums.ConnectionMethod.USB
-    diagnostics_EnableMassStorage = False
-    diagnostics_EnableTFTP = False
-    diagnostics_DisableTFTP = False
-    diagnostics_FirmwareUpdate = False
+    diagnostics_ConnectionMethod = OspreyEnums.ConnectionMethod.Ethernet
     diagnostics_AcquireSpectrum = True
     diagnostics_LiveTime_sec = 5
     diagnostics_Histogram_enabled = True
@@ -190,46 +196,10 @@ def main():
     diagnostics_Write_CSVs = False
 
     for detector in detectors:      # Detector and Camera connection
-
-        osprey = pyOsprey_lib.Osprey()
-
-        if detector.Name == 'B':
-            diagnostics_ConnectionMethod = OspreyEnums.ConnectionMethod.Ethernet
-
-        if osprey.Connect(method=diagnostics_ConnectionMethod):
-
-            # Enable TFTP server?
-            if diagnostics_EnableTFTP:
-                osprey.TFTP_Enable()
-
-            # Disable TFTP server?
-            if diagnostics_DisableTFTP:
-                osprey.TFTP_Disable()
-
-            # Get status of TFTP server
-            tftpStatus = osprey.TFTP_Status()
-            print("TFTP server enabled?: " + str(tftpStatus))
-
-            # Enter mass storage mode?
-            if diagnostics_EnableMassStorage:
-                osprey.MassStorageMode_Enable()
-
-            # Perform firmware update?
-            if diagnostics_FirmwareUpdate:
-                try:
-                    if osprey.Connected:
-                        print("Performing firmware update...")
-                        osprey.DTB.control(31, input)
-                    else:  # Not connected
-                        print("*** ERROR *** Cannot perform firmware update -- not connected!")
-                except Exception as e:
-                    print("*** ERROR *** Failed to perform firmware update on device")
-                    print(str(e))
-            if osprey.Acquisition_StopAll():
-                if osprey.PresetTime_Set(preset_mode=OspreyEnums.PresetType.LiveTime, preset_time_sec=0):
-                    osprey.Acquisition_Start()
-
-            ospreys[detector.Name] = osprey
+        if detector.OspreyInstance.Connect(method=diagnostics_ConnectionMethod):
+            print("Osprey", detector.Name, "successfully Connected")
+        else:
+            print("Osprey", detector.Name, "failed to connect")
 
         print("Connecting Cameras...")
         camera_link = "http://admin:Y%Lab2024@" + detector.CamIP + "/cgi-bin/snapshot.cgi"
@@ -242,26 +212,20 @@ def main():
 
     print("Acquiring background counts...")
     initialize_background_reading(detectors)
-    for detector in detectors:
-        print("Background cps:", detector.Name, ": ", detector.Background)
 
     # Main loop
-    try:
-        while True:
-            highest_cps = 0
-            # Read CPM value from nanoMCA
-            for detector in detectors:
-                osprey = ospreys[detector.Name]
-                cps = osprey.GetData_CountRate()
-                print("Detector IP:", detector.IP, "Current count rate:", cps)
-                if cps > 1.33*detector.Background:
-                    detection_event(osprey, detector.Background, detector.IP, model, cps, detector.CamIP)
-
-                time.sleep(0.25)
-    except KeyboardInterrupt:
+    while True:
+        highest_cps = 0
+        # Read CPM value from nanoMCA
         for detector in detectors:
-            osprey = ospreys[detector.Name]
-            osprey.Disconnect()
+            cps = detector.OspreyInstance.GetData_CountRate()
+            queuepy.Queue(detector.Bkg_counts, 20, cps)
+            detector.background = sum(detector.Bkg_counts)/len(detector.Bkg_counts)
+            print("Detector IP:", detector.IP, "Current count rate:", cps)
+            if cps > 2 * detector.Background:
+                detection_event(detector.OspreyInstance, detector.Background, detector.IP, model, cps)
+
+            time.sleep(0.5)
 
 
 if __name__ == "__main__":
