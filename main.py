@@ -1,3 +1,5 @@
+from os import mkdir
+
 import cv2
 import os
 import torch
@@ -8,10 +10,17 @@ import time
 from datetime import date, datetime
 from PIL import Image
 import random
+
+from ultralytics.utils import imwrite
+
 import pyOsprey_lib as OspreyLib
 import queuepy
+
+from ObjectRecognition import object_recognition
 from pyOsprey_enumerations import OspreyEnums
 import matplotlib.pyplot as plt
+import ObjectRecognition
+import Response_Correlation
 
 
 class Detector:
@@ -64,16 +73,23 @@ def detect_objects(identifier, image, model, cps, frames):
     person_num = 0
     car_num = 0
     object_num = 0
+    image_paths = []
     for detected_object in objects[3]:
         for object_type in objects_of_interest:
             if objects[1][object_num] == object_type:
                 object_img_name = object_type + str(object_num) + '.png'
                 cv2.imwrite(object_img_name, detected_object)
+                image_paths.append(object_img_name)
+
+
+
         object_num += 1
 
     return {
         'Detector': identifier,
         'objects': objects[1],
+        'image paths': image_paths,
+        'time': current_time,
     }
 
 
@@ -188,16 +204,29 @@ def detection_event(detector, background_cps, sn, model, cps, cam_ip):
 
     print(original_dir)
     os.chdir(original_dir)
-    return
+    return result, highest_cps
 
 
 # Creates Detector object for each detector in system
 detectors = [Detector('A', '10.0.0.3', '10.0.0.118')]  # Detector('B', '10.0.1.5', '10.0.0.137')]
 
 
+def save_pairs(pairs, result1, result2):
+    for pair in pairs:
+        if pair.Similarity >= 0.5:
+            dual_event_folder_name = ("Detector1:" + result1['Detector'] + "_Time:" +
+                                      result1['time'] + "_Detector2:" + result2['Detector']
+                                      + "_Time:" + result2['time'])
+            dual_event_path = os.path.join(os.getcwd(), dual_event_folder_name)
+            os.mkdir(dual_event_path)
+            os.chdir(dual_event_path)
+            np.savetxt(pair.Name, pair.Similarity, delimiter=",")
+
+    return
+
+
 def main():
     model = YOLO('yolov8x.pt')
-
     diagnostics_ConnectionMethod = OspreyEnums.ConnectionMethod.Ethernet
     diagnostics_AcquireSpectrum = True
     diagnostics_LiveTime_sec = 5
@@ -205,6 +234,8 @@ def main():
     diagnostics_Histogram_bins = 48
     diagnostics_Histogram_height = 10
     diagnostics_Write_CSVs = False
+
+    event_count = 0
 
     for detector in detectors:      # Detector and Camera connection
         if detector.OspreyInstance.Connect(method=diagnostics_ConnectionMethod):
@@ -228,6 +259,7 @@ def main():
     try:
         while True:
             highest_cps = 0
+            previous_highest_cps = 0
             # Read CPM value from nanoMCA
             for detector in detectors:
                 cps = detector.OspreyInstance.GetData_CountRate()
@@ -235,8 +267,16 @@ def main():
                 detector.background = sum(detector.Bkg_counts)/len(detector.Bkg_counts)
                 print("Detector IP:", detector.IP, "Current count rate:", cps)
                 if cps > 1.5 * detector.Background:
-                    detection_event(detector, detector.Background, detector.IP, model, cps,
+                    if event_count >= 1:
+                        result1 = result
+                    event_count += 1
+                    result, highest_cps = detection_event(detector, detector.Background, detector.IP, model, cps,
                                     detector.CamIP)
+                    if event_count > 1:
+                        dual_event_pairs =  object_recognition(result1, result, highest_cps, previous_highest_cps)
+                        save_pairs(dual_event_pairs, result1, result)
+                    previous_highest_cps = highest_cps
+
                 print(detector.background)
             time.sleep(0.25)
     except KeyboardInterrupt:
