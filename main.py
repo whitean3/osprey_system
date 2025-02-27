@@ -2,6 +2,8 @@ from os import mkdir
 
 import cv2
 import os
+
+import numpy
 import torch
 import csv
 from ultralytics import YOLO
@@ -74,20 +76,20 @@ def detect_objects(identifier, image, model, cps, frames):
     car_num = 0
     object_num = 0
     image_paths = []
+    detected_OOI = []
     for detected_object in objects[3]:
         for object_type in objects_of_interest:
             if objects[1][object_num] == object_type:
                 object_img_name = object_type + str(object_num) + '.png'
                 cv2.imwrite(object_img_name, detected_object)
-                image_paths.append(object_img_name)
-
-
+                image_paths.append(os.path.join(path, object_img_name))
+                detected_OOI.append(object_type + str(object_num))
 
         object_num += 1
 
     return {
         'Detector': identifier,
-        'objects': objects[1],
+        'objects': detected_OOI,
         'image paths': image_paths,
         'time': current_time,
     }
@@ -139,7 +141,7 @@ def extract_object(image, box):
 
 
 def initialize_background_reading(det):
-    t = 10
+    t = 30
 
     for detector in det:
         detector.Bkg_counts = [0]*t
@@ -170,7 +172,7 @@ def detection_event(detector, background_cps, sn, model, cps, cam_ip):
     event_duration = 0
     original_dir = os.getcwd()
     camera_link = "http://admin:Y%Lab2024@" + sn + "/cgi-bin/snapshot.cgi"
-    feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
+    feed = cv2.VideoCapture("rtsp://admin:Y%Lab2024@" + cam_ip + ":554/cam/realmonitor?channel=1&subtype=0")
     highest_cps_frame = feed.read()
     print("Detector", sn, "high counts, initiating detection event.")
     frames = []
@@ -179,7 +181,7 @@ def detection_event(detector, background_cps, sn, model, cps, cam_ip):
     while cps > 1.2 * background_cps:
         cps = detector.OspreyInstance.GetData_CountRate()
         print(cps)
-        feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
+        # feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
         ret, event_frame = feed.read()
         frames.append(event_frame)
         if cps > highest_cps:
@@ -212,16 +214,25 @@ detectors = [Detector('A', '10.0.0.3', '10.0.0.118')]  # Detector('B', '10.0.1.5
 
 
 def save_pairs(pairs, result1, result2):
+    pair_info = []
+    original_dir = os.getcwd()
+    dual_event_folder_name = ("D1_" + result1['Detector'] + "_Time_" +
+                              result1['time'] + "_D2_" + result2['Detector']
+                              + "_Time_" + result2['time'])
+    dual_event_path = os.path.join(os.getcwd(), dual_event_folder_name)
+    os.mkdir(dual_event_path)
+    os.chdir(dual_event_path)
+
     for pair in pairs:
         if pair.Similarity >= 0.5:
-            dual_event_folder_name = ("Detector1:" + result1['Detector'] + "_Time:" +
-                                      result1['time'] + "_Detector2:" + result2['Detector']
-                                      + "_Time:" + result2['time'])
-            dual_event_path = os.path.join(os.getcwd(), dual_event_folder_name)
-            os.mkdir(dual_event_path)
-            os.chdir(dual_event_path)
-            np.savetxt(pair.Name, pair.Similarity, delimiter=",")
+            pair_info.append(pair.Name + ', ' + str(pair.Similarity))
+    if len(pair_info) == 0:
+        pair_info.append("No Objects with similarity greater than 0.5")
 
+    with open(r'Similar_Pair_Info.txt', 'w') as fp:
+        for line in pair_info:
+            fp.write(line + '\n')
+    os.chdir(original_dir)
     return
 
 
@@ -244,7 +255,8 @@ def main():
             print("Osprey", detector.Name, "failed to connect")
 
         print("Connecting Cameras...")
-        camera_link = "http://admin:Y%Lab2024@" + detector.CamIP + "/cgi-bin/snapshot.cgi"
+        # rtsp://admin:Y%Lab2024@10.0.0.118:554/cam/realmonitor?channel=1&subtype=0
+        camera_link = "rtsp://admin:Y%Lab2024@" + detector.CamIP + ":554/cam/realmonitor?channel=1&subtype=0"
         feed = cv2.VideoCapture(camera_link)
         ret, highest_cps_frame = feed.read()
         if ret:
@@ -266,7 +278,7 @@ def main():
                 queuepy.Queue(detector.Bkg_counts, 20, cps)
                 detector.background = sum(detector.Bkg_counts)/len(detector.Bkg_counts)
                 print("Detector IP:", detector.IP, "Current count rate:", cps)
-                if cps > 1.5 * detector.Background:
+                if cps > 1.5*detector.background:
                     if event_count >= 1:
                         result1 = result
                     event_count += 1
@@ -277,7 +289,7 @@ def main():
                         save_pairs(dual_event_pairs, result1, result)
                     previous_highest_cps = highest_cps
 
-                print(detector.background)
+                print("Background:", detector.background)
             time.sleep(0.25)
     except KeyboardInterrupt:
         for detector in detectors:

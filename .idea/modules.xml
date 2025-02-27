@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$PROJECT_DIR$/../Osprey System/.idea/Osprey System.iml" filepath="$PROJECT_DIR$/../Osprey System/.idea/Osprey System.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/labscale_object_detection.iml" filepath="$PROJECT_DIR$/.idea/labscale_object_detection.iml" />
     </modules>
   </component>

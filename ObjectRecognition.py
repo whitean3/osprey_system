@@ -22,27 +22,31 @@ def extract_features(image_path, model):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     img = transform(img).unsqueeze(0)  # Add batch dimension
-    print(img)
+    # print(img)
     with torch.no_grad():
         features = model(img)
     # print(features)
     return features.numpy().flatten()
 
 
-
 def object_recognition(result1, result2, r2, r1):
     pairs = []
-    for object1 in result1['objects']:
-        for object2 in result2['objects']:
-            pairs.append(Pairs(object1, object2))
+    c = 0
+    for i in range(len(result1['objects'])):
+        print("Num objects: ", len(result1['objects']))
+        print("Num paths: ", len(result1['image paths']))
+        for j in range(len(result2['objects'])):
+            pairs.append(Pairs(result1['objects'][i], result2['objects'][j]))
+            pairs[c].Path1 = result1['image paths'][i]
+            pairs[c].Path2 = result2['image paths'][j]
+            c += 1
 
     for i in range(len(pairs)):
         pairs[i].Detector1 = result1['Detector']
         pairs[i].Detector2 = result2['Detector']
-        pairs[i].Path1 = result1['image paths'][i]
-        pairs[i].Path2 = result2['image paths'][i]
+
         features1 = extract_features(pairs[i].Path1, model)
-        features2 =  extract_features(pairs[i].Path2, model)
+        features2 = extract_features(pairs[i].Path2, model)
         pairs[i].Response2_true = r2
         pairs[i].Response1 = r1
         # Compute cosine similarity
