@@ -158,10 +158,20 @@ def initialize_background_reading(det):
         detector.OspreyInstance.Acquisition_Stop()
         detector.Background_SpectrumData = detector.OspreyInstance.GetData_PHA()
         filename = "Detector " + str(detector.Name) + " Background Spectrum.png"
-        path = os.path.join(os.getcwd(), "Background Spectra\\")
+        path = os.path.join(os.getcwd(), "Background Spectra")
+        # Create directory if it doesn't exist
+        os.makedirs(path, exist_ok=True)
+
         fig = plt.figure()
-        plt.hist(detector.Background_SpectrumData.Spectrum, bins=1024)
-        plt.savefig(path + filename)
+        plt.plot(detector.Background_SpectrumData.Spectrum)
+        plt.title(f"{t} s_Background Spectrum")
+        plt.xlabel("Channel")
+        plt.ylabel("Counts")
+        plt.ylim(min(detector.Background_SpectrumData.Spectrum), max(detector.Background_SpectrumData.Spectrum))
+        # plt.xlim(0, 200)
+        # plt.show()
+        plt.savefig(os.path.join(path, filename))
+        plt.close(fig)
 
     return
 
@@ -178,7 +188,7 @@ def detection_event(detector, background_cps, sn, model, cps, cam_ip):
     frames = []
     detector.OspreyInstance.Acquisition_Start()
 
-    while cps > 1.2 * background_cps:
+    while cps > 1.15 * background_cps:
         cps = detector.OspreyInstance.GetData_CountRate()
         print(cps)
         # feed = cv2.VideoCapture("http://admin:Y%Lab2024@" + cam_ip + "/cgi-bin/snapshot.cgi")
@@ -188,11 +198,11 @@ def detection_event(detector, background_cps, sn, model, cps, cam_ip):
             highest_cps_frame = event_frame
             highest_cps = cps
         event_duration += 1
-        time.sleep(0.25)
+        time.sleep(0.50)
 
     detector.OspreyInstance.Acquisition_Stop()
     event_spectrumData = detector.OspreyInstance.GetData_PHA()
-
+    #
     print("Detection event over, analyzing highest count frame...")
     result = detect_objects(sn, highest_cps_frame, model, highest_cps, frames)
     print("Image processed.")
@@ -201,19 +211,22 @@ def detection_event(detector, background_cps, sn, model, cps, cam_ip):
 
     filename = "Detector " + str(detector.Name) + " Event Spectrum.png"
     fig = plt.figure()
-    plt.hist(detector.Background_SpectrumData.Spectrum, bins=1024)
+    plt.plot(event_spectrumData.Spectrum)
+    plt.title(f"{event_duration} s Event Spectrum")
+    plt.ylim(min(event_spectrumData.Spectrum), max(event_spectrumData.Spectrum))
     plt.savefig(filename)
+    plt.close(fig)
 
     print(original_dir)
     os.chdir(original_dir)
-    return result, highest_cps
+    return result, highest_cps, event_duration, event_spectrumData
 
 
 # Creates Detector object for each detector in system
-detectors = [Detector('A', '10.0.0.3', '10.0.0.118')]  # Detector('B', '10.0.1.5', '10.0.0.137')]
+detectors = [Detector('A', '10.0.0.3', '10.0.0.118')]# Detector('B', '10.0.1.5', '10.0.0.137')]
 
 
-def save_pairs(pairs, result1, result2):
+def save_pairs(pairs, result1, result2, event_duration1, event_duration2, event_spectrum1, event_spectrum2):
     pair_info = []
     original_dir = os.getcwd()
     dual_event_folder_name = ("D1_" + result1['Detector'] + "_Time_" +
@@ -223,10 +236,32 @@ def save_pairs(pairs, result1, result2):
     os.mkdir(dual_event_path)
     os.chdir(dual_event_path)
 
+    fig1 = plt.figure()
+    plt.plot(event_spectrum1.Spectrum)
+    plt.title("Event 1 Spectrum")
+    plt.ylim(min(event_spectrum1.Spectrum), max(event_spectrum1.Spectrum))
+    plt.savefig("Event 1 Spectrum.png")
+    plt.close(fig1)
+
+    fig2 = plt.figure()
+    plt.plot(event_spectrum2.Spectrum)
+    plt.title("Event 2 Spectrum")
+    plt.ylim(min(event_spectrum2.Spectrum), max(event_spectrum2.Spectrum))
+    plt.savefig("Event 2 Spectrum.png")
+    plt.close(fig2)
+
+    # Add event durations header to pair_info
+    pair_info.append(f"Event Duration Detector {result1['Detector']}: {event_duration1} s")
+    pair_info.append(f"Event Duration Detector {result2['Detector']}: {event_duration2} s")
+    pair_info.append("\nSimilar Objects:")  # Add a separator line
+
+    similar_pairs_found = False
     for pair in pairs:
         if pair.Similarity >= 0.5:
+            similar_pairs_found = True
             pair_info.append(pair.Name + ', ' + str(pair.Similarity))
-    if len(pair_info) == 0:
+
+    if not similar_pairs_found:
         pair_info.append("No Objects with similarity greater than 0.5")
 
     with open(r'Similar_Pair_Info.txt', 'w') as fp:
@@ -275,18 +310,21 @@ def main():
             # Read CPM value from nanoMCA
             for detector in detectors:
                 cps = detector.OspreyInstance.GetData_CountRate()
-                queuepy.Queue(detector.Bkg_counts, 20, cps)
+                queuepy.Queue(detector.Bkg_counts, 30, cps)
                 detector.background = sum(detector.Bkg_counts)/len(detector.Bkg_counts)
                 print("Detector IP:", detector.IP, "Current count rate:", cps)
-                if cps > 1.5*detector.background:
+                if cps > 1.33*detector.background:
                     if event_count >= 1:
                         result1 = result
+                        event_spectrum1 = event_spectrum
+                        event_duration1 = event_duration
                     event_count += 1
-                    result, highest_cps = detection_event(detector, detector.Background, detector.IP, model, cps,
+                    result, highest_cps, event_duration, event_spectrum = detection_event(detector, detector.Background, detector.IP, model, cps,
                                     detector.CamIP)
                     if event_count > 1:
                         dual_event_pairs =  object_recognition(result1, result, highest_cps, previous_highest_cps)
-                        save_pairs(dual_event_pairs, result1, result)
+                        save_pairs(dual_event_pairs, result, result1, event_duration, event_duration1,
+                                                               event_spectrum, event_spectrum1)
                     previous_highest_cps = highest_cps
 
                 print("Background:", detector.background)

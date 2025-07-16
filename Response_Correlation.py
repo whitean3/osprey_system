@@ -14,6 +14,10 @@ class Pairs:
         self.Correlation = None
         self.Path1 = None
         self.Path2 = None
+        self.Event_spectrum1 = None
+        self.Evnet_spectrum2 = None
+        self.Event_duration1 = None
+        self.Event_duration2 = None
 
 def scale_response(pair):
     ScalingFactor = (pair.Distance1/pair.Distance2)^2

@@ -1,0 +1,13 @@
+cv2
+numpy
+torch
+ultralytics
+pillow
+matplotlib
+click
+lxml
+pyparsing
+pyyaml
+requests
+six
+wheel
